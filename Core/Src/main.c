@@ -47,8 +47,8 @@ typedef enum
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TX_BUF_LEN 600
-#define RX_BUF_LEN 600
+#define TX_BUF_LEN 1400
+#define RX_BUF_LEN 1400
 #define CRC8_POLYNOMIAL 0x07
 #define CRC8_INITIAL_VALUE 0x00
 /* USER CODE END PD */
@@ -65,16 +65,17 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 static FrameDetection detection = FrameStart;
 uint8_t frame_index = 0;
-char src[3];
-char dst[3];
-char cmd_len[3];
-uint8_t cmd_length = 14;
-uint8_t current_cmd_length = 0;
-char data[33];
-char cmd[31]; //32 - '[]' + '\0'
-char cmd_arg[30]; // argument 9 = 14 - (najkrótsza komenda + '[' + ']')
+char src[5];
+char dst[5];
+char cmd_len[5];
+uint8_t cmd_length = 65;
+bool data_check = true;
+char data[65];
+char cmd[63];
+char cmd_arg[60];
 char checksum[3];
-char frame[43];
+char frame[140];
+bool slash = false;
 
 //volatile uint32_t current_delay = 1000;//ms
 volatile uint32_t current_interval = 0;
@@ -161,8 +162,9 @@ void USART_send(char* message){ //wysyłanie do bufora TX
 void Frame_reset() {
 	detection = FrameStart;
 	frame_index = 0;
-	cmd_length = 14;
-	current_cmd_length = 0;
+	cmd_length = 65;
+	data_check = true;
+	slash = false;
 	memset(src, '\0', sizeof(src));//zapełnia tablice pustymi znakami
 	memset(dst, '\0', sizeof(dst));
 	memset(cmd_len, '\0', sizeof(cmd_len));
@@ -173,30 +175,9 @@ void Frame_reset() {
 	memset(frame, '\0', sizeof(frame));
 }
 
-////koduje znaki
-//void Cipher(char* tbl, char a, char b) {
-//	uint8_t limit = strlen(tbl);
-//	if (frame_index > limit - 1) {
-//		USART_send(e_cmd_too_long);
-//		Frame_reset();
-//	} else {
-//		tbl[frame_index] = a;
-//		frame_index++;
-//		tbl[frame_index] = b;
-//		frame_index++;
-//	}
-//}
-
-////rozpoczyna kodowanie jeżeli natrafimy na konkretne znaki
-//void Cipher_chain(char* tbl, char sign) {
-//	if		(sign == '<')	Cipher(tbl,'/','1');
-//	else if (sign == '>')	Cipher(tbl,'/','2');
-//	else if (sign == '/')	Cipher(tbl,'/','/');
-//}
-
 //sprawdza poprawność rozmiaru tabli, true - error
 bool Size_check(char* tbl, char* error) {
-	if (frame_index > strlen(tbl)) {
+	if (frame_index >= sizeof(tbl)) {
 		USART_send(new_line);
 		USART_send(error);
 		USART_send(new_line);
@@ -204,18 +185,6 @@ bool Size_check(char* tbl, char* error) {
 		return true;
 	}
 	return false;
-}
-
-// sprawdza czy kluczowe elementy ramki nie są puste (adresy/crc), true - error
-bool Empty_check(char* tbl){
-	if (strlen(tbl) == 2) {
-		return false;
-	}
-	USART_send(new_line);
-	USART_send(e_address);
-	USART_send(new_line);
-	Frame_reset();
-	return true;
 }
 
 // Funkcja do odwracania bitów w bajcie do crc
@@ -296,7 +265,7 @@ void Merge_Command_frame() {
 
 void Frame_compare() {
 	USART_send(new_line);
-	if (current_cmd_length == 0) {//data
+	if (data_check == true) {//data
 		Merge_data_frame();
 		USART_send(frame);
 		Frame_reset();
@@ -368,10 +337,22 @@ void Frame_compare() {
 	USART_send(new_line);
 }
 
+char Decode(char sign) {
+	if (slash == true) {
+		if (strcmp(sign, '1') == 0) sign = '<';
+		else if (strcmp(sign, '2') == 0) sign = '>';
+		slash = false;	//drugi slash - przechodzi slash do ramki
+		return sign;
+	} else if (slash == false && strcmp(sign, '/') == 0) {
+		slash = true;
+		return sign;
+	}
+}
+
 void FrameRd()
 {
 	int8_t x = USART_get_char();
-	if (x <= 0) {return;}// Upewnia się, że znak został poprawnie odebrany
+	if (x < 0) return;// Upewnia się, że znak został poprawnie odebrany
 	char sign = x;
 
 	if (sign == '<'){
@@ -380,51 +361,34 @@ void FrameRd()
 		return;
 	}
 
-	if (sign == '>'){
-		bool correct_frame = true;
-		if (Size_check(src, e_address))			correct_frame = false;
-		if (Size_check(dst, e_address))			correct_frame = false;
-		if (Size_check(cmd_len, e_len))			correct_frame = false;
-		if (Size_check(cmd, e_cmd_too_long))	correct_frame = false;
-		if (Size_check(cmd_arg, e_arg_too_long))correct_frame = false;
-		if (Size_check(data, e_data_too_long))	correct_frame = false;
-		if (Empty_check(src)) return;
-		if (Empty_check(dst)) return;
-
-		if (correct_frame) Frame_compare();
-		else Frame_reset();
-		return;
-	}
-
 	switch (detection){
 		case FrameStart:
 			break;
-		case FrameEnd:
-			break;
 		case Source:
+			if(Size_check(src, e_address)) return;
 			src[frame_index] = sign;
 			frame_index++;
 			if (frame_index == 2){
-				src[frame_index] = '\0';
 				frame_index = 0;
 				detection = Destination;
 			}
 			break;
 		case Destination:
+			if(Size_check(dst, e_address)) return;
 			dst[frame_index] = sign;
 			frame_index++;
 			if (frame_index == 2){
-				src[frame_index] = '\0';
 				frame_index = 0;
 				detection = CommandLength;
 			}
 			break;
 		case CommandLength:
+			if(Size_check(cmd_len, e_len)) return;
 			cmd_len[frame_index] = sign;
 			frame_index++;
 			if (frame_index == 2){
-				cmd_len[frame_index] = '\0';
 				frame_index = 0;
+				data_check = false;
 				detection = Command;
 				cmd_length = atoi(cmd_len);
 				if (strcmp(cmd_len, "00") == 0) {
@@ -435,52 +399,69 @@ void FrameRd()
 			if (!isdigit(sign)) {
 				USART_send(new_line);
 				USART_send(e_len);
+				USART_send(new_line);
 				Frame_reset();
 			}
 			break;
 		case Command:
 			if(Size_check(cmd, e_cmd_too_long)) return;
+			sign = Decode(sign);
+			if(sign == '/' && slash == true) return;
 			if (sign == '['){	//zaczyna argument
-				cmd[frame_index] = '\0';
 				frame_index = 0;
-				cmd_length -= current_cmd_length;
 				detection = Argument;
+				return;
 			} else{
 				cmd[frame_index] = sign; //sprawdza reszte liter komendy
 				frame_index++;
-				current_cmd_length++;
+				cmd_length--;
 			}
-			if (frame_index > cmd_length) {
+			if (cmd_length < 0) {
 				USART_send(new_line);
 				USART_send(e_cmd_too_long);
+				USART_send(new_line);
 				Frame_reset();
 			}
 			break;
 		case Argument:
-			if (Size_check(cmd_arg, e_arg_too_long)) return;
+			if(Size_check(cmd_arg, e_arg_too_long)) return;
+			sign = Decode(sign);
+			if(sign == '/' && slash == true) return;
 			if (sign == ']'){  // konczy argument
-				cmd_arg[frame_index] = '\0';
 				frame_index = 0;
 				detection = FrameEnd;
-			}
-			else{
+				return;
+			} else{
 				cmd_arg[frame_index] = sign;
 				frame_index++;
+				cmd_length--;
 			}
-			if (frame_index > cmd_length) {
+			if (cmd_length < 0) {
 				USART_send(new_line);
 				USART_send(e_arg_too_long);
+				USART_send(new_line);
 				Frame_reset();
 			}
 			break;
 		case Data:
-			if (Size_check(data, e_data_too_long)) return;
+			if(Size_check(data, e_data_too_long)) return;
+			sign = Decode(sign);
+			if(sign == '/' && slash == true) return;
 			data[frame_index] = sign;
 			frame_index++;
-			if (frame_index == 32) {
-				data[frame_index] = '\0';
+			if (frame_index == sizeof(data)) {
 				frame_index = 0;
 				detection = FrameEnd;
+			}
+			break;
+		case FrameEnd:
+			if (sign == '>'){
+				Frame_compare();
+			} else {
+				USART_send(new_line);
+				USART_send(e_frame);
+				USART_send(new_line);
+				Frame_reset();
 			}
 			break;
 	}
