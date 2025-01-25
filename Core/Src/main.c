@@ -75,7 +75,6 @@ char cmd[63];
 char cmd_arg[60];
 char checksum[3];
 char frame[140];
-bool slash = false;
 
 //volatile uint32_t current_delay = 1000;//ms
 volatile uint32_t current_interval = 0;
@@ -164,7 +163,6 @@ void Frame_reset() {
 	frame_index = 0;
 	cmd_length = 65;
 	data_check = true;
-	slash = false;
 	memset(src, '\0', sizeof(src));//zapełnia tablice pustymi znakami
 	memset(dst, '\0', sizeof(dst));
 	memset(cmd_len, '\0', sizeof(cmd_len));
@@ -176,8 +174,8 @@ void Frame_reset() {
 }
 
 //sprawdza poprawność rozmiaru tabli, true - error
-bool Size_check(char* tbl, char* error) {
-	if (frame_index >= sizeof(tbl)) {
+bool Size_check(char* tbl, size_t max_size, char* error) {
+    if (frame_index >= max_size) {
 		USART_send(new_line);
 		USART_send(error);
 		USART_send(new_line);
@@ -337,22 +335,34 @@ void Frame_compare() {
 	USART_send(new_line);
 }
 
-char Decode(char sign) {
-	if (slash == true) {
-		if (strcmp(sign, '1') == 0) sign = '<';
-		else if (strcmp(sign, '2') == 0) sign = '>';
-		slash = false;	//drugi slash - przechodzi slash do ramki
-		return sign;
-	} else if (slash == false && strcmp(sign, '/') == 0) {
-		slash = true;
-		return sign;
-	}
+//pomocnicza struktura do dekodowania aby przekazać wynik z flagą
+typedef struct {
+    char decoded_sign; // Rozpoznany znak
+    bool is_decoded;   // Czy znak został zdekodowany
+} DecodeResult;
+
+// funkcja do dekodowania
+DecodeResult Decode(char sign) {
+    static bool decoding = false;
+    DecodeResult result = {sign, false}; // Domyślnie: znak nie jest zdekodowany
+
+    if (decoding) {
+        decoding = false; // reset stanu po przetworzeniu znaku
+        if (sign == '1')	 result = (DecodeResult){'<', true};
+        else if (sign == '2')result = (DecodeResult){'>', true};
+        else 				 result = (DecodeResult){sign, false}; // Nieoczekiwany znak
+    } else if (sign == '/') {
+        decoding = true;
+        result = (DecodeResult){'\0', false}; // Ignoruj '/'
+    }
+
+    return result;
 }
 
 void FrameRd()
 {
 	int8_t x = USART_get_char();
-	if (x < 0) return;// Upewnia się, że znak został poprawnie odebrany
+	if (x < 0) return;
 	char sign = x;
 
 	if (sign == '<'){
@@ -361,11 +371,12 @@ void FrameRd()
 		return;
 	}
 
+	DecodeResult decode_result = Decode(sign);//potrzebne później do dekodowania
+
 	switch (detection){
 		case FrameStart:
 			break;
 		case Source:
-			if(Size_check(src, e_address)) return;
 			src[frame_index] = sign;
 			frame_index++;
 			if (frame_index == 2){
@@ -374,7 +385,6 @@ void FrameRd()
 			}
 			break;
 		case Destination:
-			if(Size_check(dst, e_address)) return;
 			dst[frame_index] = sign;
 			frame_index++;
 			if (frame_index == 2){
@@ -383,7 +393,6 @@ void FrameRd()
 			}
 			break;
 		case CommandLength:
-			if(Size_check(cmd_len, e_len)) return;
 			cmd_len[frame_index] = sign;
 			frame_index++;
 			if (frame_index == 2){
@@ -392,6 +401,7 @@ void FrameRd()
 				detection = Command;
 				cmd_length = atoi(cmd_len);
 				if (strcmp(cmd_len, "00") == 0) {
+					data_check = true;
 					detection = Data;
 					cmd_length = 0;
 				}
@@ -404,9 +414,9 @@ void FrameRd()
 			}
 			break;
 		case Command:
-			if(Size_check(cmd, e_cmd_too_long)) return;
-			sign = Decode(sign);
-			if(sign == '/' && slash == true) return;
+			if(Size_check(cmd, 63, e_cmd_too_long)) return;
+			sign = decode_result.decoded_sign;
+			if(sign == '\0') return;
 			if (sign == '['){	//zaczyna argument
 				frame_index = 0;
 				detection = Argument;
@@ -424,9 +434,9 @@ void FrameRd()
 			}
 			break;
 		case Argument:
-			if(Size_check(cmd_arg, e_arg_too_long)) return;
-			sign = Decode(sign);
-			if(sign == '/' && slash == true) return;
+			if(Size_check(cmd_arg, 60, e_arg_too_long)) return;
+			sign = decode_result.decoded_sign;
+			if(sign == '\0') return;
 			if (sign == ']'){  // konczy argument
 				frame_index = 0;
 				detection = FrameEnd;
@@ -444,14 +454,20 @@ void FrameRd()
 			}
 			break;
 		case Data:
-			if(Size_check(data, e_data_too_long)) return;
-			sign = Decode(sign);
-			if(sign == '/' && slash == true) return;
+			if(Size_check(data, 65, e_data_too_long)) return;
+			sign = decode_result.decoded_sign;
+			if(sign == '\0') {return;}
+			else if (sign == '>' && !decode_result.is_decoded){  // konczy dane, else aby rozkodowany znak nie kończł ramki
+				Frame_compare();
+				return;
+			}
 			data[frame_index] = sign;
 			frame_index++;
-			if (frame_index == sizeof(data)) {
-				frame_index = 0;
-				detection = FrameEnd;
+			if (frame_index >= 65) {
+				USART_send(new_line);
+				USART_send(e_data_too_long);
+				USART_send(new_line);
+				Frame_reset();
 			}
 			break;
 		case FrameEnd:
