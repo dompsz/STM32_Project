@@ -37,7 +37,7 @@ typedef enum
 	FrameStart,
 	Source,
 	Destination,
-	CommandLength,// if 00 go to data
+	CommandLength,// if '00' go to data
 	Command,
 	Data,
 	Argument,
@@ -47,8 +47,8 @@ typedef enum
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TX_BUF_LEN 1400
-#define RX_BUF_LEN 1400
+#define TX_BUF_LEN 1500// 20 ramek
+#define RX_BUF_LEN 75
 #define CRC8_POLYNOMIAL 0x07
 #define CRC8_INITIAL_VALUE 0x00
 /* USER CODE END PD */
@@ -60,29 +60,31 @@ typedef enum
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+I2C_HandleTypeDef hi2c1;
+DMA_HandleTypeDef hdma_i2c1_rx;
+DMA_HandleTypeDef hdma_i2c1_tx;
+
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 static FrameDetection detection = FrameStart;
 uint8_t frame_index = 0;
-char src[5];
-char dst[5];
-char cmd_len[5];
-uint8_t cmd_length = 65;
-bool data_check = true;
-char data[65];
-char cmd[63];
-char cmd_arg[60];
+char src[2];
+char dst[2];
+char cmd_len[2];
+char data[64];// podwójna wielkość dla obsługi kodowania
+char cmd[63];// podwójna wielkość dla obsługi kodowania
+char cmd_arg[60];// podwójna wielkość dla obsługi kodowania
 char checksum[3];
-char frame[140];
+char frame[75];//max length + '<' + '>' + '\0'
+uint8_t cmd_length = 64; // zmienna pomocnicza do sprawdzania rozmiarów komend
+bool data_check = true;
 
-//volatile uint32_t current_delay = 1000;//ms
 volatile uint32_t current_interval = 0;
 volatile bool display_logs = true; //TODO implement functionality
-
+//zmienne buforowe
 volatile uint8_t BUF_RX[RX_BUF_LEN];
 volatile uint8_t BUF_TX[TX_BUF_LEN];
-
 volatile uint16_t empty_RX = 0;
 volatile uint16_t busy_RX = 0;
 volatile uint16_t empty_TX = 0;
@@ -106,7 +108,9 @@ char* e_address = "Address Error";
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 void SystemClock_Config(void);
 void MX_GPIO_Init(void);
@@ -159,11 +163,13 @@ void USART_send(char* message){ //wysyłanie do bufora TX
 
 //Resetuje wszystkie tablice ramki i nasłuchiwanie
 void Frame_reset() {
+	//zapełnia tablice pustymi znakami, lekko redundantne rozwiązanie
+	//ale zapewnia że dane z poprzedniej ramki nie zostaną przypadkowo wykorzystane ponownie
 	detection = FrameStart;
 	frame_index = 0;
-	cmd_length = 65;
+	cmd_length = 64;
 	data_check = true;
-	memset(src, '\0', sizeof(src));//zapełnia tablice pustymi znakami
+	memset(src, '\0', sizeof(src));
 	memset(dst, '\0', sizeof(dst));
 	memset(cmd_len, '\0', sizeof(cmd_len));
 	memset(cmd, '\0', sizeof(cmd));
@@ -318,7 +324,7 @@ void Frame_compare() {
 			}
 		} else{
 	//		uint16_t tmp_arg = atoi(cmd_arg);
-			if (1) {//TODO check if table has this index
+			if (1) {//TODO check if table in file has this index
 				USART_send("data with given index: ");
 				USART_send("12:10 17.11.2024: 20C, 20%");
 			} else USART_send(e_index);
@@ -371,7 +377,7 @@ void FrameRd()
 		return;
 	}
 
-	DecodeResult decode_result = Decode(sign);//potrzebne później do dekodowania
+	DecodeResult decode_result = Decode(sign); //potrzebne później do dekodowania
 
 	switch (detection){
 		case FrameStart:
@@ -454,7 +460,7 @@ void FrameRd()
 			}
 			break;
 		case Data:
-			if(Size_check(data, 65, e_data_too_long)) return;
+			if(Size_check(data, 64, e_data_too_long)) return;
 			sign = decode_result.decoded_sign;
 			if(sign == '\0') {return;}
 			else if (sign == '>' && !decode_result.is_decoded){  // konczy dane, else aby rozkodowany znak nie kończł ramki
@@ -463,7 +469,7 @@ void FrameRd()
 			}
 			data[frame_index] = sign;
 			frame_index++;
-			if (frame_index >= 65) {
+			if (frame_index >= 64) {
 				USART_send(new_line);
 				USART_send(e_data_too_long);
 				USART_send(new_line);
@@ -502,19 +508,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){//odbieranie z konsoli
 			if(empty_RX >= RX_BUF_LEN)	empty_RX = 0;// zapętlenie bufora
 			HAL_UART_Receive_IT(&huart2, &BUF_RX[empty_RX], 1);
 		}
-		HAL_UART_Transmit_IT(&huart2, &BUF_RX[empty_RX-1], 1);
+		HAL_UART_Transmit_IT(&huart2, &BUF_RX[empty_RX-1], 1);//DEBUG
 		//wyświetla ostatni odebrany znak w konsoli do debugowania
 	}
 }
-
-//void Delay()
-//{
-//	uint32_t start_time = uwTick; // aktualny czas z systick handlera
-//	    while ((uwTick - start_time) < current_delay)
-//	    {
-//	        // Pętla oczekująca
-//	    }
-//}
 
 void welcome() {
 	USART_send(new_line);
@@ -549,12 +546,13 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-//  SysTick_Config(16000000/1000);
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   HAL_UART_Receive_IT(&huart2, &BUF_RX[0],1);
   HAL_UART_RxCpltCallback(&huart2);
@@ -566,8 +564,9 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	  FrameRd();
+
     /* USER CODE BEGIN 3 */
+	  FrameRd();
   }
   /* USER CODE END 3 */
 }
@@ -620,6 +619,40 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -634,25 +667,40 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 1 */
 
   /* USER CODE END USART2_Init 1 */
-	huart2.Instance = USART2;
-	huart2.Init.BaudRate = 115200;
-	huart2.Init.WordLength = UART_WORDLENGTH_8B;
-	huart2.Init.StopBits = UART_STOPBITS_1;
-	huart2.Init.Parity = UART_PARITY_NONE;
-	huart2.Init.Mode = UART_MODE_TX_RX;
-	huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-	huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-	if (HAL_UART_Init(&huart2) != HAL_OK)
-	{
-		Error_Handler();
-	}
-
-	/* Enable DMA for RX and TX */
-//	HAL_UART_Receive_DMA(&huart2, BUF_RX, RX_BUF_LEN);
-//	HAL_UART_Transmit_DMA(&huart2, BUF_TX, TX_BUF_LEN);
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
+  /* DMA1_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
 
 }
 
