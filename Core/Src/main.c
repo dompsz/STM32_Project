@@ -55,6 +55,7 @@ typedef enum
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
+#pragma GCC diagnostic ignored "-Wint-conversion"
 #pragma GCC diagnostic ignored "-Wunused-function"
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 /* USER CODE END PM */
@@ -79,6 +80,7 @@ char checksum[3];
 char frame[75];//max length + '<' + '>' + '\0'
 uint8_t cmd_length = 64; // zmienna pomocnicza do sprawdzania rozmiarów komend
 bool data_check = true;
+bool decoding = false;
 
 volatile uint32_t current_interval = 0;
 volatile bool display_logs = true; //TODO implement functionality
@@ -166,17 +168,14 @@ void Frame_reset() {
 	//zapełnia tablice pustymi znakami, lekko redundantne rozwiązanie
 	//ale zapewnia że dane z poprzedniej ramki nie zostaną przypadkowo wykorzystane ponownie
 	detection = FrameStart;
+	decoding = false;
 	frame_index = 0;
 	cmd_length = 64;
 	data_check = true;
-	memset(src, '\0', sizeof(src));
-	memset(dst, '\0', sizeof(dst));
-	memset(cmd_len, '\0', sizeof(cmd_len));
-	memset(cmd, '\0', sizeof(cmd));
-	memset(cmd_arg, '\0', sizeof(cmd_arg));
-	memset(data, '\0', sizeof(data));
-	memset(checksum, '\0', sizeof(checksum));
-	memset(frame, '\0', sizeof(frame));
+	memset(cmd,		'\0', 63);
+	memset(cmd_arg, '\0', 60);
+	memset(data,	'\0', 64);
+
 }
 
 //sprawdza poprawność rozmiaru tabli, true - error
@@ -349,12 +348,11 @@ typedef struct {
 
 // funkcja do dekodowania
 DecodeResult Decode(char sign) {
-    static bool decoding = false;
     DecodeResult result = {sign, false}; // Domyślnie: znak nie jest zdekodowany
 
     if (decoding) {
         decoding = false; // reset stanu po przetworzeniu znaku
-        if (sign == '1')	 result = (DecodeResult){'<', true};
+        if 		(sign == '1')result = (DecodeResult){'<', true};
         else if (sign == '2')result = (DecodeResult){'>', true};
         else 				 result = (DecodeResult){sign, false}; // Nieoczekiwany znak
     } else if (sign == '/') {
@@ -377,7 +375,8 @@ void FrameRd()
 		return;
 	}
 
-	DecodeResult decode_result = Decode(sign); //potrzebne później do dekodowania
+	if (decoding == FrameStart) return; // zapobiega błędnemu rozpoznawaniu kodowania poza ramką
+	DecodeResult decode_result = Decode(sign);
 
 	switch (detection){
 		case FrameStart:
@@ -402,6 +401,7 @@ void FrameRd()
 			cmd_len[frame_index] = sign;
 			frame_index++;
 			if (frame_index == 2){
+				decoding = false;
 				frame_index = 0;
 				data_check = false;
 				detection = Command;
@@ -425,6 +425,7 @@ void FrameRd()
 			if(sign == '\0') return;
 			if (sign == '['){	//zaczyna argument
 				frame_index = 0;
+				decoding = false;
 				detection = Argument;
 				return;
 			} else{
@@ -445,6 +446,7 @@ void FrameRd()
 			if(sign == '\0') return;
 			if (sign == ']'){  // konczy argument
 				frame_index = 0;
+				decoding = false;
 				detection = FrameEnd;
 				return;
 			} else{
