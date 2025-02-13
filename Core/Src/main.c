@@ -39,8 +39,8 @@ typedef enum
 	Destination,
 	CommandLength,// if '00' go to data
 	Command,
-	Data,
 	Argument,
+	Data,
 	FrameEnd
 } FrameDetection;
 /* USER CODE END PTD */
@@ -57,7 +57,6 @@ typedef enum
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 #pragma GCC diagnostic ignored "-Wint-conversion"
-#pragma GCC diagnostic ignored "-Wunused-function"
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 /* USER CODE END PM */
 
@@ -167,25 +166,25 @@ void USART_send(char* message){ //wysyłanie do bufora TX
     __enable_irq(); //ponownie aktywujemy przerwania
 }
 
-void temp_log(void) {
+char temp_log() {
     uint16_t lastIndex = (empty_SENSOR + SENSOR_BUF_LEN - 1) % SENSOR_BUF_LEN;
     char msg[32];
     sprintf(msg, "temperature: %.1fC", BUF_SENSOR[lastIndex].temperature);
-    USART_send(msg);
+    return msg;
 }
 
-void moist_log(void) {
+char moist_log() {
     uint16_t lastIndex = (empty_SENSOR + SENSOR_BUF_LEN - 1) % SENSOR_BUF_LEN;
     char msg[32];
     sprintf(msg, "moisture: %u%%", BUF_SENSOR[lastIndex].moisture);
-    USART_send(msg);
+    return msg;
 }
 
-void sensor_log(void) {
+char sensor_log() {
     uint16_t lastIndex = (empty_SENSOR + SENSOR_BUF_LEN - 1) % SENSOR_BUF_LEN;
     char msg[32];
     sprintf(msg, "temp: %.1fC, moist: %u%%", BUF_SENSOR[lastIndex].temperature, BUF_SENSOR[lastIndex].moisture);
-    USART_send(msg);
+    return msg;
 }
 
 //Resetuje wszystkie tablice ramki i nasłuchiwanie
@@ -258,83 +257,56 @@ void Frame_merge(char* tbl) {
 
 //łączy wszystkie tablice ramki danych i dodaje sume kontrolną
 void Merge_data_frame() {
-	frame_index = 0;
-	frame[frame_index++] = '<';
-	Frame_merge(src);
+	frame[0] = '<';
+	frame_index = 1;
 	Frame_merge(dst);
+	Frame_merge(src);
 	Frame_merge(cmd_len);
 	Frame_merge(data);
 	uint8_t crc = Calculate_CRC8(frame);
 	char crc_str[3]; // 2 cyfry plus '\0'
 	snprintf(crc_str, sizeof(crc_str), "%02X", crc); // konwersja hex do char
 	Frame_merge(crc_str);
-	frame[frame_index++] = '>';
-	frame[frame_index] = '\0';
-}
-
-//łączy wszystkie tablice ramki komendy i dodaje sume kontrolną
-void Merge_Command_frame() {
-	frame_index = 0;
-	frame[frame_index++] = '<';
-	Frame_merge(src);
-	Frame_merge(dst);
-	Frame_merge(cmd_len);
-	Frame_merge(cmd);
-	frame[frame_index++] = '[';
-	Frame_merge(cmd_arg);
-	frame[frame_index++] = ']';
-	uint8_t crc = Calculate_CRC8(frame);
-	char crc_str[3]; // 2 cyfry plus '\0'
-	snprintf(crc_str, sizeof(crc_str), "%02X", crc); // konwersja hex do char
-	Frame_merge(crc_str);
-	frame[frame_index++] = '>';
-	frame[frame_index] = '\0';
+	frame[frame_index] = '>';
 }
 
 void Frame_compare() {
     USART_send(new_line);
-    if (data_check) { // DEBUG data frame
-        Merge_data_frame();
-        USART_send(frame);
-        return;
-    } else { // DEBUG command frame
-        Merge_Command_frame();
-        USART_send(frame);
-    }
+    if (data_check) return;
 
     if (strcmp(cmd, "cur") == 0) { // Sprawdzenie komendy cur
+        char *response;
         if (cmd_arg[0] == '\0') {
-            sensor_log();
+            response = sensor_log();
         } else if (strcmp(cmd_arg, "t") == 0) {
-            temp_log();
+            response = temp_log();
         } else if (strcmp(cmd_arg, "m") == 0) {
-            moist_log();
+            response = moist_log();
         } else {
             USART_send(e_arg);
+            return;
         }
+        strncpy(data, response, 32);
+        Merge_data_frame();
+        USART_send(frame);
 
     } else if (strcmp(cmd, "int") == 0) { // Ustawienie lub wyświetlenie interwału
+        char response[32];
         uint32_t tmp_int_from_frame = atoi(cmd_arg);
 
         if (cmd_arg[0] == '\0') { // Wyświetlanie interwału w sekundach
-            char tmp_current_int[11]; // max 4 miliony + \0
-            sprintf(tmp_current_int, "%u", read_interval / 1000); // Konwersja na sekundy
-            USART_send("Current Interval: ");
-            USART_send(tmp_current_int);
-            USART_send("s"); // Dodanie jednostki sekund
+            sprintf(response, "Current Interval: %us", read_interval / 1000);
         } else { // Ustawienie nowego interwału
-            read_interval = tmp_int_from_frame * 1000; // Konwersja na milisekundy
-
-            if (tmp_int_from_frame == 0) { // Jeśli podano 0, wyłącz interwał
-                USART_send("Interval disabled");
-            } else { // W przeciwnym razie ustaw interwał na podaną wartość
-                char tmp_current_int[11];
-                sprintf(tmp_current_int, "%u", tmp_int_from_frame); // Wypisujemy wartość w sekundach
-                USART_send("Interval set to: ");
-                USART_send(tmp_current_int);
-                USART_send("s"); // Dodanie jednostki sekund
+            read_interval = tmp_int_from_frame * 1000;
+            if (tmp_int_from_frame == 0) {
+                strcpy(response, "Interval disabled");
+            } else {
+                sprintf(response, "Interval set to: %us", tmp_int_from_frame);
             }
         }
+        strncpy(data, response, 32);
+        Merge_data_frame();
+        USART_send(frame);
 
     } else if (strcmp(cmd, "data") == 0) { // Obsługa archiwum pomiarów
         if (cmd_arg[0] == '\0') { // Wyświetlenie całego archiwum
@@ -343,10 +315,11 @@ void Frame_compare() {
             } else {
                 uint16_t idx = busy_SENSOR;
                 while (idx != empty_SENSOR) {
-                    char msg[50];
-                    sprintf(msg, "id: %.1fC, %u%%", BUF_SENSOR[idx].temperature, BUF_SENSOR[idx].moisture);
-                    USART_send(msg);
-                    USART_send(new_line);
+                    char response[32];
+                    sprintf(response, "id: %.1fC, %u%%", BUF_SENSOR[idx].temperature, BUF_SENSOR[idx].moisture);
+                    strncpy(data, response, 32);
+                    Merge_data_frame();
+                    USART_send(frame);
                     idx = (idx + 1) % SENSOR_BUF_LEN;
                 }
             }
@@ -357,9 +330,11 @@ void Frame_compare() {
                     USART_send("No data available");
                 } else {
                     uint16_t lastIndex = (empty_SENSOR + SENSOR_BUF_LEN - 1) % SENSOR_BUF_LEN;
-                    char msg[50];
-                    sprintf(msg, "id: %.1fC, %u%%", BUF_SENSOR[lastIndex].temperature, BUF_SENSOR[lastIndex].moisture);
-                    USART_send(msg);
+                    char response[32];
+                    sprintf(response, "id: %.1fC, %u%%", BUF_SENSOR[lastIndex].temperature, BUF_SENSOR[lastIndex].moisture);
+                    strncpy(data, response, 32);
+                    Merge_data_frame();
+                    USART_send(frame);
                 }
             } else if (requested_index < 0 || requested_index >= SENSOR_BUF_LEN) { // Indeks poza zakresem
                 USART_send(e_index);
@@ -374,9 +349,11 @@ void Frame_compare() {
                     for (int i = 0; i < requested_index; i++) {
                         idx = (idx + 1) % SENSOR_BUF_LEN;
                     }
-                    char msg[50];
-                    sprintf(msg, "id: %.1fC, %u%%", BUF_SENSOR[idx].temperature, BUF_SENSOR[idx].moisture);
-                    USART_send(msg);
+                    char response[32];
+                    sprintf(response, "id: %.1fC, %u%%", BUF_SENSOR[idx].temperature, BUF_SENSOR[idx].moisture);
+                    strncpy(data, response, 32);
+                    Merge_data_frame();
+                    USART_send(frame);
                 }
             }
         }
@@ -390,7 +367,9 @@ void Frame_compare() {
             // Resetowanie wskaźników bufora
             busy_SENSOR = 0;
             empty_SENSOR = 0;
-            USART_send("Cleared all data");
+            strncpy(data, "Cleared all data", 32);
+            Merge_data_frame();
+            USART_send(frame);
         } else {
             USART_send(e_arg);
         }
@@ -530,6 +509,7 @@ void FrameRd()
 			sign = decode_result.decoded_sign;
 			if(sign == '\0') {return;}
 			else if (sign == '>' && !decode_result.is_decoded){  // konczy dane, else aby rozkodowany znak nie kończł ramki
+				decoding = false;
 				Frame_compare();
 				return;
 			}

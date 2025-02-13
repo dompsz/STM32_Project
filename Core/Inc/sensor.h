@@ -24,18 +24,13 @@ typedef enum {
   SENSOR_STATE_PROCESS
 } SensorState_t;
 
-
 typedef struct {
 	float temperature;
 	uint16_t moisture;
 } SensorMeasurment_t;
 
 extern volatile uint32_t read_interval;
-extern void sensor_log();
 
 void sensor_process();
-
-void circular_buffer_push(float temperature, uint16_t moisture);
-
 
 #endif  // SENSOR_H

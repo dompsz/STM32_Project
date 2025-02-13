@@ -117,7 +117,6 @@ void sensor_process() {
 		}
 	    // Czeka aż upłynie zadany interwał
 	    if(HAL_GetTick() >= nextMeasurementTick) {
-	        sensor_log();  //DEBUG -  wysyła dane do konsoli
 	        sensorState = SENSOR_STATE_IDLE;
 	        nextMeasurementTick = HAL_GetTick() + read_interval;
 	    }
