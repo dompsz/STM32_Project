@@ -31,6 +31,11 @@ void sensor_process() {
 
 	switch(sensorState) {
 	case SENSOR_STATE_IDLE:
+		// Interval disabled
+		if (read_interval == 0) {
+			return;
+		}
+
 	    if(HAL_GetTick() >= nextMeasurementTick) {
 	        sensorState = SENSOR_STATE_TEMP_WRITE;
 	        if(HAL_I2C_Master_Transmit_IT(&hi2c1, SENSOR_I2C_ADDR, (uint8_t*)temp_cmd, 2) != HAL_OK) {
@@ -105,6 +110,11 @@ void sensor_process() {
 	    break;
 
 	case SENSOR_STATE_DELAY:
+		// Interval disabled
+		if (read_interval == 0) {
+			sensorState = SENSOR_STATE_IDLE;
+		    return;
+		}
 	    // Czeka aż upłynie zadany interwał
 	    if(HAL_GetTick() >= nextMeasurementTick) {
 	        sensor_log();  //DEBUG -  wysyła dane do konsoli

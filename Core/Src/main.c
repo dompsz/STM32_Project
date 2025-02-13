@@ -296,13 +296,10 @@ void Frame_compare() {
     if (data_check) { // DEBUG data frame
         Merge_data_frame();
         USART_send(frame);
-        Frame_reset();
-        USART_send(new_line);
         return;
     } else { // DEBUG command frame
         Merge_Command_frame();
         USART_send(frame);
-        USART_send(new_line);
     }
 
     if (strcmp(cmd, "cur") == 0) { // Sprawdzenie komendy cur
@@ -318,20 +315,24 @@ void Frame_compare() {
 
     } else if (strcmp(cmd, "int") == 0) { // Ustawienie lub wyświetlenie interwału
         uint32_t tmp_int_from_frame = atoi(cmd_arg);
-        if (cmd_arg[0] == '\0') { // Wyświetlanie interwału
-            char tmp_curent_int[11]; // max 4 miliony + \0
-            sprintf(tmp_curent_int, "%u", read_interval);
+
+        if (cmd_arg[0] == '\0') { // Wyświetlanie interwału w sekundach
+            char tmp_current_int[11]; // max 4 miliony + \0
+            sprintf(tmp_current_int, "%u", read_interval / 1000); // Konwersja na sekundy
             USART_send("Current Interval: ");
-            USART_send(tmp_curent_int);
+            USART_send(tmp_current_int);
+            USART_send("s"); // Dodanie jednostki sekund
         } else { // Ustawienie nowego interwału
-            if (tmp_int_from_frame > 0) {
-                read_interval = tmp_int_from_frame;
-                char tmp_curent_int[11];
-                sprintf(tmp_curent_int, "%u", read_interval);
+            read_interval = tmp_int_from_frame * 1000; // Konwersja na milisekundy
+
+            if (tmp_int_from_frame == 0) { // Jeśli podano 0, wyłącz interwał
+                USART_send("Interval disabled");
+            } else { // W przeciwnym razie ustaw interwał na podaną wartość
+                char tmp_current_int[11];
+                sprintf(tmp_current_int, "%u", tmp_int_from_frame); // Wypisujemy wartość w sekundach
                 USART_send("Interval set to: ");
-                USART_send(tmp_curent_int);
-            } else {
-                USART_send(e_arg);
+                USART_send(tmp_current_int);
+                USART_send("s"); // Dodanie jednostki sekund
             }
         }
 
@@ -339,7 +340,6 @@ void Frame_compare() {
         if (cmd_arg[0] == '\0') { // Wyświetlenie całego archiwum
             if (busy_SENSOR == empty_SENSOR) { // Sprawdzenie czy bufor nie jest pusty
                 USART_send("No data available");
-                USART_send(new_line);
             } else {
                 uint16_t idx = busy_SENSOR;
                 while (idx != empty_SENSOR) {
@@ -355,24 +355,20 @@ void Frame_compare() {
             if (requested_index == -1) { // Ostatni pomiar
                 if (busy_SENSOR == empty_SENSOR) {
                     USART_send("No data available");
-                    USART_send(new_line);
                 } else {
                     uint16_t lastIndex = (empty_SENSOR + SENSOR_BUF_LEN - 1) % SENSOR_BUF_LEN;
                     char msg[50];
                     sprintf(msg, "id: %.1fC, %u%%", BUF_SENSOR[lastIndex].temperature, BUF_SENSOR[lastIndex].moisture);
                     USART_send(msg);
-                    USART_send(new_line);
                 }
             } else if (requested_index < 0 || requested_index >= SENSOR_BUF_LEN) { // Indeks poza zakresem
                 USART_send(e_index);
-                USART_send(new_line);
             } else { // Pobranie konkretnego indeksu
                 uint16_t stored_values = (empty_SENSOR >= busy_SENSOR) ? //sprawdza czy bufor sie zawija
                                           (empty_SENSOR - busy_SENSOR) : //zbiera wartości od końca tablicy
                                           (SENSOR_BUF_LEN - busy_SENSOR + empty_SENSOR);// od początku
                 if (requested_index >= stored_values) { // Sprawdzenie, czy indeks istnieje
                     USART_send(e_index);
-                    USART_send(new_line);
                 } else {
                     uint16_t idx = busy_SENSOR;
                     for (int i = 0; i < requested_index; i++) {
@@ -381,7 +377,6 @@ void Frame_compare() {
                     char msg[50];
                     sprintf(msg, "id: %.1fC, %u%%", BUF_SENSOR[idx].temperature, BUF_SENSOR[idx].moisture);
                     USART_send(msg);
-                    USART_send(new_line);
                 }
             }
         }
