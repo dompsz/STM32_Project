@@ -439,7 +439,7 @@ void FrameRd()
 		return;
 	}
 
-	if (decoding == FrameStart) return; // zapobiega błędnemu rozpoznawaniu kodowania poza ramką
+	if (detection == FrameStart) return; // zapobiega błędnemu rozpoznawaniu kodowania poza ramką
 	DecodeResult decode_result = Decode(sign);
 
 	switch (detection){
