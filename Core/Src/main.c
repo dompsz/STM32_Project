@@ -27,7 +27,7 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <ctype.h>
-#include <time.h>
+#include <sensor.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,6 +51,7 @@ typedef enum
 #define RX_BUF_LEN 75
 #define CRC8_POLYNOMIAL 0x07
 #define CRC8_INITIAL_VALUE 0x00
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -82,8 +83,7 @@ uint8_t cmd_length = 64; // zmienna pomocnicza do sprawdzania rozmiarów komend
 bool data_check = true;
 bool decoding = false;
 
-volatile uint32_t current_interval = 0;
-volatile bool display_logs = true; //TODO implement functionality
+volatile uint32_t read_interval = 1000;
 //zmienne buforowe
 volatile uint8_t BUF_RX[RX_BUF_LEN];
 volatile uint8_t BUF_TX[TX_BUF_LEN];
@@ -91,6 +91,10 @@ volatile uint16_t empty_RX = 0;
 volatile uint16_t busy_RX = 0;
 volatile uint16_t empty_TX = 0;
 volatile uint16_t busy_TX = 0;
+
+volatile SensorMeasurment_t BUF_SENSOR[SENSOR_BUF_LEN];
+volatile uint16_t empty_SENSOR = 0;
+volatile uint16_t busy_SENSOR = 0;
 
 //command errors
 char* new_line = "\r\n\r";
@@ -161,6 +165,27 @@ void USART_send(char* message){ //wysyłanie do bufora TX
         empty_TX = idx;
     }
     __enable_irq(); //ponownie aktywujemy przerwania
+}
+
+void temp_log(void) {
+    uint16_t lastIndex = (empty_SENSOR + SENSOR_BUF_LEN - 1) % SENSOR_BUF_LEN;
+    char msg[32];
+    sprintf(msg, "temperature: %.1fC", BUF_SENSOR[lastIndex].temperature);
+    USART_send(msg);
+}
+
+void moist_log(void) {
+    uint16_t lastIndex = (empty_SENSOR + SENSOR_BUF_LEN - 1) % SENSOR_BUF_LEN;
+    char msg[32];
+    sprintf(msg, "moisture: %u%%", BUF_SENSOR[lastIndex].moisture);
+    USART_send(msg);
+}
+
+void sensor_log(void) {
+    uint16_t lastIndex = (empty_SENSOR + SENSOR_BUF_LEN - 1) % SENSOR_BUF_LEN;
+    char msg[32];
+    sprintf(msg, "temp: %.1fC, moist: %u%%", BUF_SENSOR[lastIndex].temperature, BUF_SENSOR[lastIndex].moisture);
+    USART_send(msg);
 }
 
 //Resetuje wszystkie tablice ramki i nasłuchiwanie
@@ -267,78 +292,122 @@ void Merge_Command_frame() {
 }
 
 void Frame_compare() {
-	USART_send(new_line);
-	if (data_check == true) {//data
-		Merge_data_frame();
-		USART_send(frame);
-		Frame_reset();
-		USART_send(new_line);
-		return;
-	} else {
-		Merge_Command_frame();
-		USART_send(frame);
-		USART_send(new_line);
-	}
+    USART_send(new_line);
+    if (data_check) { // DEBUG data frame
+        Merge_data_frame();
+        USART_send(frame);
+        Frame_reset();
+        USART_send(new_line);
+        return;
+    } else { // DEBUG command frame
+        Merge_Command_frame();
+        USART_send(frame);
+        USART_send(new_line);
+    }
 
-	if (strcmp(cmd, "cur") == 0){// porównanie stringa z komendą
-		if (strcmp(cmd_arg, "t") == 0){
-			USART_send("temperature: 25C");//argumenty
-		} else if (strcmp(cmd_arg, "m") == 0) {
-			USART_send("moisture: 20%");//argumenty
-		} else if (strcmp(cmd_arg, "\0") == 0) {
-			USART_send("temp: 25C, moist: 20%");//argumenty
-		} else USART_send(e_arg);
+    if (strcmp(cmd, "cur") == 0) { // Sprawdzenie komendy cur
+        if (cmd_arg[0] == '\0') {
+            sensor_log();
+        } else if (strcmp(cmd_arg, "t") == 0) {
+            temp_log();
+        } else if (strcmp(cmd_arg, "m") == 0) {
+            moist_log();
+        } else {
+            USART_send(e_arg);
+        }
 
-	}else if (strcmp(cmd, "int") == 0) {// ustawia/ wyświetla interwał
-		uint32_t tmp_int_from_frame = atoi(cmd_arg);
-		if (strcmp(cmd_arg, "\0") == 0){//show
-			char tmp_curent_int[11];//max 4 miliony + \0
-			sprintf(tmp_curent_int, "%u", current_interval);
-			USART_send("Current Interval: ");
-			USART_send(tmp_curent_int);
-		} else {
-			if (tmp_int_from_frame > 0) {//set
-				current_interval = tmp_int_from_frame;
-				char tmp_curent_int[11];//max 4 miliony + \0
-				sprintf(tmp_curent_int, "%u", current_interval);
-				USART_send("Interval set to: ");
-				USART_send(tmp_curent_int);
-			} else USART_send(e_arg);
-		}
+    } else if (strcmp(cmd, "int") == 0) { // Ustawienie lub wyświetlenie interwału
+        uint32_t tmp_int_from_frame = atoi(cmd_arg);
+        if (cmd_arg[0] == '\0') { // Wyświetlanie interwału
+            char tmp_curent_int[11]; // max 4 miliony + \0
+            sprintf(tmp_curent_int, "%u", read_interval);
+            USART_send("Current Interval: ");
+            USART_send(tmp_curent_int);
+        } else { // Ustawienie nowego interwału
+            if (tmp_int_from_frame > 0) {
+                read_interval = tmp_int_from_frame;
+                char tmp_curent_int[11];
+                sprintf(tmp_curent_int, "%u", read_interval);
+                USART_send("Interval set to: ");
+                USART_send(tmp_curent_int);
+            } else {
+                USART_send(e_arg);
+            }
+        }
 
-	}else if (strcmp(cmd, "log") == 0) {
-		if (strcmp(cmd_arg, "y") == 0 || strcmp(cmd_arg, "t") == 0 ){
-			display_logs = true;
-			USART_send("Interval Logs ON");
-		} else if (strcmp(cmd_arg, "n") == 0 || strcmp(cmd_arg, "f") == 0 ) {
-			display_logs = false;
-			USART_send("Interval Logs OFF");
-		} else USART_send(e_arg);
+    } else if (strcmp(cmd, "data") == 0) { // Obsługa archiwum pomiarów
+        if (cmd_arg[0] == '\0') { // Wyświetlenie całego archiwum
+            if (busy_SENSOR == empty_SENSOR) { // Sprawdzenie czy bufor nie jest pusty
+                USART_send("No data available");
+                USART_send(new_line);
+            } else {
+                uint16_t idx = busy_SENSOR;
+                while (idx != empty_SENSOR) {
+                    char msg[50];
+                    sprintf(msg, "id: %.1fC, %u%%", BUF_SENSOR[idx].temperature, BUF_SENSOR[idx].moisture);
+                    USART_send(msg);
+                    USART_send(new_line);
+                    idx = (idx + 1) % SENSOR_BUF_LEN;
+                }
+            }
+        } else { // indeks -1 lub konkretna wartość
+            int requested_index = atoi(cmd_arg);
+            if (requested_index == -1) { // Ostatni pomiar
+                if (busy_SENSOR == empty_SENSOR) {
+                    USART_send("No data available");
+                    USART_send(new_line);
+                } else {
+                    uint16_t lastIndex = (empty_SENSOR + SENSOR_BUF_LEN - 1) % SENSOR_BUF_LEN;
+                    char msg[50];
+                    sprintf(msg, "id: %.1fC, %u%%", BUF_SENSOR[lastIndex].temperature, BUF_SENSOR[lastIndex].moisture);
+                    USART_send(msg);
+                    USART_send(new_line);
+                }
+            } else if (requested_index < 0 || requested_index >= SENSOR_BUF_LEN) { // Indeks poza zakresem
+                USART_send(e_index);
+                USART_send(new_line);
+            } else { // Pobranie konkretnego indeksu
+                uint16_t stored_values = (empty_SENSOR >= busy_SENSOR) ? //sprawdza czy bufor sie zawija
+                                          (empty_SENSOR - busy_SENSOR) : //zbiera wartości od końca tablicy
+                                          (SENSOR_BUF_LEN - busy_SENSOR + empty_SENSOR);// od początku
+                if (requested_index >= stored_values) { // Sprawdzenie, czy indeks istnieje
+                    USART_send(e_index);
+                    USART_send(new_line);
+                } else {
+                    uint16_t idx = busy_SENSOR;
+                    for (int i = 0; i < requested_index; i++) {
+                        idx = (idx + 1) % SENSOR_BUF_LEN;
+                    }
+                    char msg[50];
+                    sprintf(msg, "id: %.1fC, %u%%", BUF_SENSOR[idx].temperature, BUF_SENSOR[idx].moisture);
+                    USART_send(msg);
+                    USART_send(new_line);
+                }
+            }
+        }
 
-	}else if (strcmp(cmd, "data") == 0) {//TODO implement functionality
-		if (strcmp(cmd_arg, "\0") == 0){
-			for(uint8_t i = 0 ; i < 5 ; i++) {
-				USART_send("12:10 17.11.2024: 20C, 20%");
-				USART_send(new_line);
-			}
-		} else{
-	//		uint16_t tmp_arg = atoi(cmd_arg);
-			if (1) {//TODO check if table in file has this index
-				USART_send("data with given index: ");
-				USART_send("12:10 17.11.2024: 20C, 20%");
-			} else USART_send(e_index);
-		}
+    } else if (strcmp(cmd, "purge") == 0) { // Czyszczenie bufora
+        if (cmd_arg[0] == '\0') {
+            for (int i = 0; i < SENSOR_BUF_LEN; i++) {
+                BUF_SENSOR[i].temperature = 0.0f;
+                BUF_SENSOR[i].moisture = 0;
+            }
+            // Resetowanie wskaźników bufora
+            busy_SENSOR = 0;
+            empty_SENSOR = 0;
+            USART_send("Cleared all data");
+        } else {
+            USART_send(e_arg);
+        }
 
-	} else if (strcmp(cmd, "purge") == 0) { //TODO implement functionality
-		if (strcmp(cmd_arg, "\0") == 0){
-			USART_send("Cleared all data");
-		}else USART_send(e_arg);
+    } else {
+        USART_send(e_cmd);
+    }
 
-	} else USART_send(e_cmd);
-
-	Frame_reset();
-	USART_send(new_line);
+    Frame_reset();
+    USART_send(new_line);
 }
+
 
 //pomocnicza struktura do dekodowania aby przekazać wynik z flagą
 typedef struct {
@@ -558,6 +627,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_UART_Receive_IT(&huart2, &BUF_RX[0],1);
   HAL_UART_RxCpltCallback(&huart2);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -568,6 +638,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+	  sensor_process();
 	  FrameRd();
   }
   /* USER CODE END 3 */
