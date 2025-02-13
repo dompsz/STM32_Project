@@ -97,16 +97,10 @@ volatile uint16_t busy_SENSOR = 0;
 
 //command errors
 char* new_line = "\r\n\r";
-char* e_cmd_too_long = "Command is too long";
 char* e_cmd = "Unknown command";
 char* e_arg = "Argument Error";
-char* e_arg_too_long = "Argument Too Long";
 char* e_index = "Invalid Index";
-char* e_crc = "Validation Failed";
-char* e_frame = "Frame error";
-char* e_data_too_long = "Data too long";
-char* e_len = "Command length error";
-char* e_address = "Address Error";
+char* e_data = "No Data Available";
 
 /* USER CODE END PV */
 
@@ -203,11 +197,8 @@ void Frame_reset() {
 }
 
 //sprawdza poprawność rozmiaru tabli, true - error
-bool Size_check(char* tbl, size_t max_size, char* error) {
+bool Size_check(char* tbl, size_t max_size) {
     if (frame_index >= max_size) {
-		USART_send(new_line);
-		USART_send(error);
-		USART_send(new_line);
 		Frame_reset();
 		return true;
 	}
@@ -275,16 +266,15 @@ void Frame_compare() {
     if (data_check) return;
 
     if (strcmp(cmd, "cur") == 0) { // Sprawdzenie komendy cur
-        char *response;
+        char response[32];
         if (cmd_arg[0] == '\0') {
-            response = sensor_log();
+        	sprintf(response, sensor_log(), 32);
         } else if (strcmp(cmd_arg, "t") == 0) {
-            response = temp_log();
+        	sprintf(response, temp_log(), 32);
         } else if (strcmp(cmd_arg, "m") == 0) {
-            response = moist_log();
+        	sprintf(response, moist_log(), 32);
         } else {
-            USART_send(e_arg);
-            return;
+        	sprintf(response, e_arg, 32);
         }
         strncpy(data, response, 32);
         Merge_data_frame();
@@ -299,9 +289,9 @@ void Frame_compare() {
         } else { // Ustawienie nowego interwału
             read_interval = tmp_int_from_frame * 1000;
             if (tmp_int_from_frame == 0) {
-                strcpy(response, "Interval disabled");
+            	sprintf(response, "Interval disabled", 32);
             } else {
-                sprintf(response, "Interval set to: %us", tmp_int_from_frame);
+                sprintf(response, "Interval set to: %us", 32);
             }
         }
         strncpy(data, response, 32);
@@ -311,7 +301,9 @@ void Frame_compare() {
     } else if (strcmp(cmd, "data") == 0) { // Obsługa archiwum pomiarów
         if (cmd_arg[0] == '\0') { // Wyświetlenie całego archiwum
             if (busy_SENSOR == empty_SENSOR) { // Sprawdzenie czy bufor nie jest pusty
-                USART_send("No data available");
+            	strncpy(data, e_data, 32);
+            	Merge_data_frame();
+            	USART_send(frame);
             } else {
                 uint16_t idx = busy_SENSOR;
                 while (idx != empty_SENSOR) {
@@ -327,7 +319,9 @@ void Frame_compare() {
             int requested_index = atoi(cmd_arg);
             if (requested_index == -1) { // Ostatni pomiar
                 if (busy_SENSOR == empty_SENSOR) {
-                    USART_send("No data available");
+                	strncpy(data, e_data, 32);
+                	Merge_data_frame();
+                	USART_send(frame);
                 } else {
                     uint16_t lastIndex = (empty_SENSOR + SENSOR_BUF_LEN - 1) % SENSOR_BUF_LEN;
                     char response[32];
@@ -337,13 +331,17 @@ void Frame_compare() {
                     USART_send(frame);
                 }
             } else if (requested_index < 0 || requested_index >= SENSOR_BUF_LEN) { // Indeks poza zakresem
-                USART_send(e_index);
+            	strncpy(data, e_index, 32);
+            	Merge_data_frame();
+            	USART_send(frame);
             } else { // Pobranie konkretnego indeksu
                 uint16_t stored_values = (empty_SENSOR >= busy_SENSOR) ? //sprawdza czy bufor sie zawija
                                           (empty_SENSOR - busy_SENSOR) : //zbiera wartości od końca tablicy
                                           (SENSOR_BUF_LEN - busy_SENSOR + empty_SENSOR);// od początku
                 if (requested_index >= stored_values) { // Sprawdzenie, czy indeks istnieje
-                    USART_send(e_index);
+                	strncpy(data, e_index, 32);
+                	Merge_data_frame();
+                	USART_send(frame);
                 } else {
                     uint16_t idx = busy_SENSOR;
                     for (int i = 0; i < requested_index; i++) {
@@ -368,14 +366,16 @@ void Frame_compare() {
             busy_SENSOR = 0;
             empty_SENSOR = 0;
             strncpy(data, "Cleared all data", 32);
-            Merge_data_frame();
-            USART_send(frame);
         } else {
-            USART_send(e_arg);
+        	strncpy(data, e_arg, 32);
         }
+        Merge_data_frame();
+        USART_send(frame);
 
     } else {
-        USART_send(e_cmd);
+    	strncpy(data, e_cmd, 32);
+    	Merge_data_frame();
+    	USART_send(frame);
     }
 
     Frame_reset();
@@ -456,14 +456,11 @@ void FrameRd()
 				}
 			}
 			if (!isdigit(sign)) {
-				USART_send(new_line);
-				USART_send(e_len);
-				USART_send(new_line);
 				Frame_reset();
 			}
 			break;
 		case Command:
-			if(Size_check(cmd, 63, e_cmd_too_long)) return;
+			if(Size_check(cmd, 63)) return;
 			sign = decode_result.decoded_sign;
 			if(sign == '\0') return;
 			if (sign == '['){	//zaczyna argument
@@ -477,14 +474,11 @@ void FrameRd()
 				cmd_length--;
 			}
 			if (cmd_length < 0) {
-				USART_send(new_line);
-				USART_send(e_cmd_too_long);
-				USART_send(new_line);
 				Frame_reset();
 			}
 			break;
 		case Argument:
-			if(Size_check(cmd_arg, 60, e_arg_too_long)) return;
+			if(Size_check(cmd_arg, 60)) return;
 			sign = decode_result.decoded_sign;
 			if(sign == '\0') return;
 			if (sign == ']'){  // konczy argument
@@ -498,14 +492,11 @@ void FrameRd()
 				cmd_length--;
 			}
 			if (cmd_length < 0) {
-				USART_send(new_line);
-				USART_send(e_arg_too_long);
-				USART_send(new_line);
 				Frame_reset();
 			}
 			break;
 		case Data:
-			if(Size_check(data, 64, e_data_too_long)) return;
+			if(Size_check(data, 64)) return;
 			sign = decode_result.decoded_sign;
 			if(sign == '\0') {return;}
 			else if (sign == '>' && !decode_result.is_decoded){  // konczy dane, else aby rozkodowany znak nie kończł ramki
@@ -516,9 +507,6 @@ void FrameRd()
 			data[frame_index] = sign;
 			frame_index++;
 			if (frame_index >= 64) {
-				USART_send(new_line);
-				USART_send(e_data_too_long);
-				USART_send(new_line);
 				Frame_reset();
 			}
 			break;
@@ -526,9 +514,6 @@ void FrameRd()
 			if (sign == '>'){
 				Frame_compare();
 			} else {
-				USART_send(new_line);
-				USART_send(e_frame);
-				USART_send(new_line);
 				Frame_reset();
 			}
 			break;
@@ -587,13 +572,10 @@ int main(void)
   Frame_reset();
 
   /* USER CODE END Init */
-
   /* Configure the system clock */
   SystemClock_Config();
-
   /* USER CODE BEGIN SysInit */
   /* USER CODE END SysInit */
-
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
